@@ -1,0 +1,184 @@
+version: '3.7'
+
+services:
+### traefik ##############################################
+    traefik:
+        image: traefik:v2.3.7 # The official Traefik docker image, SKIPPING 2.4 as there is an acmeca bug
+        container_name: traefik
+        command: >
+            --serversTransport.insecureSkipVerify=true
+            --api.insecure=true
+            --api=true
+            --log=true
+            --log.level=DEBUG
+            --accessLog=true
+            --accessLog.filePath=/traefik.log
+            --accessLog.bufferingSize=100
+            --providers.docker=true
+            --providers.docker.endpoint=unix:///var/run/docker.sock
+            --providers.docker.exposedbydefault=false
+            --entrypoints.http.address=:80/tcp
+            --entrypoints.https.address=:443/tcp
+            --entrypoints.web.http.redirections.entrypoint.to=https
+            --entrypoints.web.http.redirections.entrypoint.scheme=https
+            --certificatesResolvers.internalca.acme.caServer="${CA_DNS_ROOT}/acme/${CA_AREA}/directory"
+            --certificatesResolvers.internalca.acme.email="${CA_EMAIL}"
+            --certificatesResolvers.internalca.acme.storage=/acme.json
+            --certificatesResolvers.internalca.acme.keyType=EC256
+            --certificatesResolvers.internalca.acme.tlschallenge=true
+            --certificatesResolvers.internalca.acme.httpChallenge=true
+            --certificatesResolvers.internalca.acme.httpChallenge.entryPoint=http
+            --certificatesResolvers.onHostRule=true 
+        security_opt:
+          - no-new-privileges:true
+        ports:
+            - '80:80/tcp'
+            - '8080:8080/tcp'
+            - '443:443/tcp'
+        volumes:
+            #- /etc/resolv.conf:/etc/resolv.conf:ro
+            - /var/run/docker.sock:/var/run/docker.sock:ro # So that Traefik can listen to the Docker events
+            - ./traefik/acme/acme.json:/acme.json
+            - ./traefik/traefik.log:/traefik.log
+            - ./traefik/root_ca.crt:/rootca.crt
+        restart: always
+        environment:
+            LEGO_CA_CERTIFICATES: /rootca.crt
+            LEGO_CA_SERVER_NAME: ${CA_DNS_ROOT}
+        logging:
+            options:
+                max-size: "8m"
+                max-file: "10"        
+        labels:
+            - "com.centurylinklabs.watchtower.enable=true"
+            - "traefik.enable=true"
+            - "traefik.http.routers.traefik.rule=Host(`${DNS_TRAEFIK}`)"
+            - "traefik.http.routers.traefik.service=api@internal" 
+            - "traefik.http.routers.http-catchall.entrypoints=http"
+            - "traefik.http.routers.http-catchall.rule=HostRegexp(`{host:.+}`)"
+            - "traefik.http.routers.http-catchall.middlewares=redirect-to-https@docker"
+            - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+            - "traefik.http.routers.traefik-web-secure.rule=Host(`${DNS_TRAEFIK}`)"
+            - "traefik.http.routers.traefik-web-secure.entrypoints=https"
+            - "traefik.http.routers.traefik-web-secure.tls=true"
+            - "traefik.http.routers.traefik-web-secure.tls.certresolver=internalca"
+            - "traefik.http.routers.traefik-web-secure.tls.domains[0].main=${DNS_TRAEFIK}"
+            - "traefik.http.routers.traefik-web-secure.tls.domains[0].sans=${DNS_TRAEFIK}"
+            #- "traefik.http.middlewares.traefik-headers.headers.accesscontrolallowmethods=GET, OPTIONS, PUT"
+            #- "traefik.http.middlewares.traefik-headers.headers.accesscontrolalloworiginlist=https://${ROOT_DOMAIN}"
+            - "traefik.http.middlewares.traefik-headers.headers.accesscontrolmaxage=100"
+            #- "traefik.http.middlewares.traefik-headers.headers.addvaryheader=true" 
+            #- "traefik.http.middlewares.traefik-headers.headers.allowedhosts=${DNS_TRAEFIK}" 
+            - "traefik.http.middlewares.traefik-headers.headers.hostsproxyheaders=X-Forwarded-Host"
+            - "traefik.http.middlewares.traefik-headers.headers.sslredirect=true"
+            - "traefik.http.middlewares.traefik-headers.headers.sslhost=${DNS_TRAEFIK}" 
+            - "traefik.http.middlewares.traefik-headers.headers.sslforcehost=true"
+            - "traefik.http.middlewares.traefik-headers.headers.sslproxyheaders.X-Forwarded-Proto=https"
+            - "traefik.http.middlewares.traefik-headers.headers.stsseconds=63072000"
+            - "traefik.http.middlewares.traefik-headers.headers.stsincludesubdomains=true"
+            - "traefik.http.middlewares.traefik-headers.headers.stspreload=true"
+            - "traefik.http.middlewares.traefik-headers.headers.forcestsheader=true"
+            - "traefik.http.middlewares.traefik-headers.headers.framedeny=true"
+            - "traefik.http.middlewares.traefik-headers.headers.contenttypenosniff=true"
+            - "traefik.http.middlewares.traefik-headers.headers.browserxssfilter=true"
+            - "traefik.http.middlewares.traefik-headers.headers.referrerpolicy=same-origin"
+            - "traefik.http.middlewares.traefik-headers.headers.featurepolicy=camera 'none'; geolocation 'none'; microphone 'none'; payment 'none'; usb 'none'; vr 'none';"
+            - "traefik.http.middlewares.traefik-headers.headers.customresponseheaders.X-Robots-Tag=none,noarchive,nosnippet,notranslate,noimageindex,"
+
+    acmeca:
+        image: acmeca:latest
+        build: 
+            context: ./build/acmeca
+            dockerfile: Dockerfile            
+        container_name: acmeca
+        restart: unless-stopped
+        environment: 
+            - PASSWORD="${CA_PASSWORD}
+            - DNS_ROOT="${CA_DNS_ROOT}"
+            - AUTHORITY_NAME="${CA_AUTHORITY_NAME}"
+            - CA_AREA="${Production}"
+        volumes: 
+            - ./acmeca:/home/step
+            - /etc/localtime:/etc/localtime:ro
+            - /etc/timezone:/etc/timezone:ro
+            #- /etc/resolv.conf:/etc/resolv.conf:ro            
+        depends_on: 
+            - traefik        
+        labels:
+            - com.centurylinklabs.watchtower.enable=true    
+            - "traefik.enable=true"
+            - "traefik.tcp.routers.acmeca.rule=HostSNI(`${CA_DNS_ROOT}`)"
+            - "traefik.tcp.routers.acmeca.tls.passthrough=true"            
+            - "traefik.tcp.routers.acmeca.service=acmeca@docker"
+            - "traefik.tcp.routers.acmeca.entrypoints=https"            
+            - "traefik.tcp.services.acmeca.loadbalancer.server.port=443"            
+
+    keycloakdb:
+        image: postgres
+        restart: always   
+        container_name: keycloakdb 
+        volumes:
+            - /app.data/worker2/keycloakdb:/var/lib/postgresql/data
+            - /etc/localtime:/etc/localtime:ro
+        environment:
+            POSTGRES_DB: ${KEYCLOAK_POSTGRES_DB}
+            POSTGRES_USER: ${KEYCLOAK_POSTGRES_USER}
+            POSTGRES_PASSWORD: ${KEYCLOAK_POSTGRES_PASSWORD}    
+
+    keycloak:
+        build:
+            context: ./build/keycloak
+            dockerfile: Dockerfile
+        container_name: keycloak        
+        environment:
+            DB_VENDOR: ${KEYCLOAK_DB_VENDOR}
+            DB_ADDR: ${KEYCLOAK_DB_ADDR}
+            DB_DATABASE: ${KEYCLOAK_POSTGRES_DB}
+            DB_USER: ${KEYCLOAK_POSTGRES_USER}
+            DB_PASSWORD: ${KEYCLOAK_PASSWORD}
+            KEYCLOAK_USER: ${KEYCLOAK_USER}
+            KEYCLOAK_PASSWORD: ${KEYCLOAK_PASSWORD}
+            # This is required to run keycloak behind traefik
+            PROXY_ADDRESS_FORWARDING: ${PROXY_ADDRESS_FORWARDING}
+        depends_on:
+            - keycloakdb
+            - traefik
+        volumes:
+            - /etc/localtime:/etc/localtime:ro
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.keycloak.rule=Host(`${DNS_KEYCLOAK}`)"
+            - "traefik.http.services.keycloak.loadbalancer.server.port=8080"
+            - "traefik.http.routers.keycloak-web-secure.rule=Host(`${DNS_KEYCLOAK}`)"
+            - "traefik.http.routers.keycloak-web-secure.entrypoints=https"
+            - "traefik.http.routers.keycloak-web-secure.tls=true"
+            - "traefik.http.routers.keycloak-web-secure.tls.certresolver=internalca"
+
+    registry:
+        image: registry:2
+        restart: unless-stopped
+        container_name: registry
+        depends_on:
+            - keycloakdb
+            - keycloak
+            - traefik
+        volumes:
+            - /etc/localtime:/etc/localtime:ro
+            - /etc/timezone:/etc/timezone:ro
+            #- /etc/resolv.conf:/etc/resolv.conf:ro
+            - ./registry/certs:/opt/certs:z
+            - ./registry/data/registry:/data:z
+        environment:
+            REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY: ${DOCKER_REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY}
+            REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE: ${DOCKER_REGISTRY_AUTH_TOKEN_ROOTCERTBUNDLE}
+            REGISTRY_AUTH_TOKEN_REALM: ${DOCKER_REGISTRY_AUTH_TOKEN_REALM}
+            REGISTRY_AUTH_TOKEN_SERVICE: ${DOCKER_REGISTRY_AUTH_TOKEN_SERVICE}
+            REGISTRY_AUTH_TOKEN_ISSUER: ${DOCKER_REGISTRY_AUTH_TOKEN_ISSUER}
+        labels:
+            - "traefik.enable=true"
+            - "traefik.http.routers.registry.rule=Host(`${DNS_DOCKER_REGISTRY}`)"
+            - "traefik.http.services.registry.loadbalancer.server.port=5000"
+            - "traefik.http.routers.registry-web-secure.rule=Host(`${DNS_DOCKER_REGISTRY}`)"
+            - "traefik.http.routers.registry-web-secure.entrypoints=https"
+            - "traefik.http.routers.registry-web-secure.tls=true"
+            - "traefik.http.routers.registry-web-secure.tls.certresolver=internalca"             
